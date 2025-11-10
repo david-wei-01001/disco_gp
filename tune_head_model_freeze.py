@@ -17,7 +17,7 @@ NUM_EPOCHS = 3
 LR = 1e-4
 LABEL_MAP = {"bonafide": 0, "spoof": 1}
 SAVE_HEAD_PATH = "pool_head.pth"
-DROPOUT = 0.0
+DROPOUT = 0.1
 # ------------------------------------------
 
 # 1) load datasets (local files, HF dataset script)
@@ -37,13 +37,15 @@ def collate_fn(batch):
         if lab is None:
             raise KeyError("Example missing 'label' field.")
         if isinstance(lab, str):
+            print("labels are string")
             lab = LABEL_MAP[lab]
         labels.append(float(lab))
     # feature_extractor will pad to max length in batch and return tensors
     enc = fe(waveforms, sampling_rate=TARGET_SR, padding=True, return_tensors="pt")
     # enc contains 'input_values' and possibly 'attention_mask'
     input_values = enc["input_values"]       # (B, samples)
-    attention_mask = enc.get("attention_mask", None)  # (B, seq) or None
+    # attention_mask = enc.get("attention_mask", None)  # (B, seq) or None
+    attention_mask = None
     return input_values, attention_mask, torch.tensor(labels, dtype=torch.float32)
 
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
@@ -80,6 +82,7 @@ with torch.no_grad():
     enc_vals = enc["input_values"].to(DEVICE)
     out = hubert(enc_vals).last_hidden_state   # (1, T, H)
     H = out.size(-1)
+    print(f"Hidden size is: {H}")
 
 head = PoolHeadNoPoolingInside(hidden_dim=H, dropout=DROPOUT).to(DEVICE)
 
@@ -114,7 +117,7 @@ for epoch in range(NUM_EPOCHS):
                 pooled = masked_mean(hubert_out, attention_mask)  # (B, H)
             else:
                 hubert_out = hubert(input_values).last_hidden_state
-                pooled = hubert_out.mean(dim=1)  # (B, H)
+                pooled = F.adaptive_avg_pool1d(hubert_out.transpose(1,2), 1).squeeze(-1)
 
         logits = head(pooled)  # (B,)
         loss = criterion(logits, labels)
@@ -142,8 +145,8 @@ for epoch in range(NUM_EPOCHS):
                 pooled = masked_mean(hubert_out, attention_mask)
             else:
                 hubert_out = hubert(input_values).last_hidden_state
-                pooled = hubert_out.mean(dim=1)
-
+                pooled = F.adaptive_avg_pool1d(hubert_out.transpose(1,2), 1).squeeze(-1)
+                
             logits = head(pooled)
             dev_loss += criterion(logits, labels).item() * labels.size(0)
             preds = (torch.sigmoid(logits) > 0.5).long()
