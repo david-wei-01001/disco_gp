@@ -180,26 +180,29 @@ def setup_spoof(disco_gp, wrapped, verbose: bool = False):
         if verbose:
             print(*args, **kwargs)
 
-    # --- 1) load dataset ---
-    try:
-        vprint("Loading dataset LanceaKing/asvspoof2019 from Hugging Face...")
-        ds = load_dataset("LanceaKing/asvspoof2019", split="train", trust_remote_code=True)
-        vprint("Loaded dataset. Number of examples:", len(ds))
-        vprint("Dataset column names:", ds.column_names)
-    except Exception as e:
-        print("ERROR loading dataset LanceaKing/asvspoof2019:", e)
-        traceback.print_exc()
-        raise
+    DATA_DIR = "/w/435/cse/noise_wer_correlations/disco_data/LA"
 
-    # --- 2) split into train/dev/test using disco_gp helper ---
-    dev_test, test_over_dev = split_ratios(disco_gp.cfg.ds_split_ratios)
-    vprint("Splitting dataset with ratios (dev_test, test_over_dev) =", dev_test, test_over_dev)
-    ds_split = ds.train_test_split(test_size=dev_test)
-    vprint("After first split: train size =", len(ds_split["train"]), "lumped test size =", len(ds_split["test"]))
-    eval_test_split = ds_split["test"].train_test_split(test_over_dev)
-    vprint("Final split sizes -> train:", len(ds_split["train"]),
-           "eval (dev):", len(eval_test_split["train"]),
-           "test:", len(eval_test_split["test"]))
+    # --- 1) load dataset ---
+    train_ds = load_dataset(
+        "LanceaKing/asvspoof2019",
+        data_dir=DATA_DIR,
+        split="train",
+        trust_remote_code=True,   # required because this dataset uses a remote dataset script
+    )
+    
+    dev_ds = load_dataset(
+        "LanceaKing/asvspoof2019",
+        data_dir=DATA_DIR,
+        split="dev",
+        trust_remote_code=True,
+    )
+    
+    eval_ds = load_dataset(
+        "LanceaKing/asvspoof2019",
+        data_dir=DATA_DIR,
+        split="eval",
+        trust_remote_code=True,
+    )
 
     # --- 3) inner collate function with verbose checks ---
     def collate_fn(batch):
@@ -319,19 +322,19 @@ def setup_spoof(disco_gp, wrapped, verbose: bool = False):
     # --- 4) build dataloaders ---
     vprint("Creating DataLoaders with batch_size =", disco_gp.cfg.batch_size)
     train_dl = DataLoader(
-        ds_split["train"],
+        train_ds,
         batch_size=disco_gp.cfg.batch_size,
         shuffle=True,
         collate_fn=collate_fn,
     )
     eval_dl = DataLoader(
-        eval_test_split["train"],
+        dev_ds,
         batch_size=disco_gp.cfg.batch_size,
         shuffle=False,
         collate_fn=collate_fn,
     )
     test_dl = DataLoader(
-        eval_test_split["test"],
+        eval_ds,
         batch_size=disco_gp.cfg.batch_size,
         shuffle=False,
         collate_fn=collate_fn,
