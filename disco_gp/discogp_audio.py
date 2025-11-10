@@ -496,7 +496,8 @@ class DiscoGPAudioEncoder(nn.Module):
             # Original (unmasked) logits must be precomputed and cached on the loader
             original_logits = dl.original_output[i]
 
-            batch_logits_masked = self(batch_inputs['toekns'].to(self.cfg.device))[0]
+            encoder_out = self(batch_inputs['toekns'].to(self.cfg.device))[0]
+            batch_logits_masked = F.adaptive_avg_pool1d(encoder_out.transpose(1,2), 1).squeeze(-1)
             eval_results = self.compute_loss(batch_logits_masked, batch_inputs, original_logits)
 
             correct += eval_results['n_correct']
@@ -540,9 +541,8 @@ class DiscoGPAudioEncoder(nn.Module):
             encoder_out = self(batch_inputs['tokens'].to(self.cfg.device))[0]
 
             if self.cfg.task_type in ['spoof']:
-                flattened = encoder_out.reshape(B, L * H)     # (B, L * H)
-                # Save original logits for this batch (match existing record usage)
-                record[i] = flattened.detach().cpu()
+                pooled = F.adaptive_avg_pool1d(encoder_out.transpose(1,2), 1).squeeze(-1)
+                record[i] = pooled.detach().cpu()
 
             else:
                 raise NotImplementedError(f"Task {self.cfg.task_type} not implemented")
