@@ -731,7 +731,7 @@ class DiscoGPAudioEncoder(nn.Module):
             epoch_loop.set_description(f"Epoch {epoch} {mode} λ_s={lambda_sparse:.3f} λ_c={lambda_complete:.3f}")
 
             for batch_inputs in self.dls.train:
-                batch_input_ids = batch_inputs['input_ids'].to(self.cfg.device)
+                batch_input_ids = batch_inputs['tokens'].to(self.cfg.device)
 
                 # Sample current masks and compute sparsity loss
                 if mode == 'w':
@@ -742,14 +742,16 @@ class DiscoGPAudioEncoder(nn.Module):
                     sparse_loss = self.edge_sparseness_loss()
 
                 # Faithfulness on masked model
-                batch_logits_masked = self(batch_input_ids)[0]  # (B, seq_len, vocab_size)
+                encoder_out = self(batch_input_ids)[0]
+                batch_logits_masked = F.adaptive_avg_pool1d(encoder_out.transpose(1,2), 1).squeeze(-1)
                 eval_results = self.compute_faith_loss(batch_logits_masked, batch_inputs)
                 faith_loss = eval_results['faith']
 
                 # Completeness (evaluate with reversed masks) — only for edge mode during this step
                 if mode == 'e' and lambda_complete > 0:
                     self.turn_on_edge_masks(deterministic=False, reverse=True)
-                    batch_logits = self(batch_input_ids)[0]
+                    encoder_out = self(batch_input_ids)[0]
+                    batch_logits = F.adaptive_avg_pool1d(encoder_out.transpose(1,2), 1).squeeze(-1)
                     complete_loss, _ = self.compute_complete_loss(batch_logits, batch_inputs)
                 else:
                     complete_loss = 0.0
@@ -769,7 +771,8 @@ class DiscoGPAudioEncoder(nn.Module):
                 # For weights, compute completeness in a second pass with reversed masks
                 if mode == 'w' and lambda_complete > 0:
                     self.turn_on_weight_masks(deterministic=False, reverse=True)
-                    batch_logits = self(batch_input_ids)[0]
+                    encoder_out = self(batch_input_ids)[0]
+                    batch_logits = F.adaptive_avg_pool1d(encoder_out.transpose(1,2), 1).squeeze(-1)
                     complete_loss, _ = self.compute_complete_loss(batch_logits, batch_inputs)
                     loss = complete_loss * lambda_complete
                     loss.backward()
