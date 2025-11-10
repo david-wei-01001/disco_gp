@@ -391,7 +391,7 @@ class DiscoGPAudioEncoder(nn.Module):
             model.head = None
         model = model.to(model.cfg.device, dtype=model.cfg.dtype)
         model.dls = setup_audio_task(model, wrapped_model, verbose=True)
-
+        del wrapped_model
         return model
     
     def setup_experiment(self):
