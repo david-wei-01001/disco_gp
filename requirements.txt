@@ -1,5 +1,6 @@
-transformer_lens
 nltk
-datasets
+datasets<3.0.0
 scikit-learn
 wandb
+git+https://github.com/david-wei-01001/TransformerLens.git
+hf_transfer==0.1.9
