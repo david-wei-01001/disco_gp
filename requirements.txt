@@ -4,3 +4,5 @@ scikit-learn
 wandb
 git+https://github.com/david-wei-01001/TransformerLens.git
 hf_transfer==0.1.9
+soundfile
+transformers

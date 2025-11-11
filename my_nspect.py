@@ -5,7 +5,7 @@ import pandas as pd
 import soundfile as sf    # pip install soundfile
 from pathlib import Path
 
-DATA_DIR = "asvspoof2019"  # change if different
+DATA_DIR = "/w/435/cse/noise_wer_correlations/disco_data/LA"  # change if different
 
 def find_text_protocols(root):
     # look for common protocol/trl files or any txt files
