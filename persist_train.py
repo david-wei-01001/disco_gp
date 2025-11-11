@@ -13,7 +13,7 @@ from tqdm.auto import tqdm
 from disco_gp.data import setup_audio_task
 
 # import your persistence helpers (adjust module name as needed)
-from neural_persistence import neural_persistence_of_module_linears, PoolHeadNoPoolingInside  # or disco_gp.neural_persistence
+from persist import neural_persistence_of_module_linears, PoolHeadNoPoolingInside  # or disco_gp.neural_persistence
 
 # ----------------- config -----------------
 HUBERT_MODEL = "facebook/hubert-base-ls960"
@@ -28,6 +28,27 @@ SAVE_HEAD_PATH = "pool_head.pth"
 DROPOUT = 0.1
 p = 2.0
 # ------------------------------------------
+
+def compute_head_persistence_details(head_module, p=2.0):
+    """
+    Returns dict:
+      {
+        "per_layer": {layer_name: (total, normalized), ...},
+        "overall_total": float,
+        "overall_normalized": float
+      }
+    """
+    raw = neural_persistence_of_module_linears(head_module, p=p)
+    per_layer = {}
+    overall_total = 0.0
+    overall_norm = 0.0
+    for lname, info in raw.items():
+        t = float(info.get("total_persistence", 0.0))
+        tn = float(info.get("total_persistence_normalized", 0.0))
+        per_layer[lname or "<linear>"] = (t, tn)
+        overall_total += t
+        overall_norm += tn
+    return {"per_layer": per_layer, "overall_total": overall_total, "overall_normalized": overall_norm}
 
 def masked_mean(hidden, attn_mask):
     """
@@ -77,50 +98,111 @@ def get_head_persistence(head_module, p=2.0):
     per_layer, overall_total, overall_norm = summarize_persistence_dict(raw)
     return {"per_layer": per_layer, "overall_total": overall_total, "overall_normalized": overall_norm}
 
+def evaluate_and_snapshot(hubert, head, dataloader, device, p=2.0):
+    """
+    Runs one eval pass on `dataloader` to compute accuracy, then computes persistence
+    from the current head weights. Returns (accuracy, persistence_dict).
+    """
+    head.eval()
+    hubert.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for batch in dataloader:
+            input_values = batch["tokens"].to(device)
+            labels = batch["labels"].to(device)
+            # handle optional attention mask if present in the batch
+            attention_mask = batch.get("attention_mask", None)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
+                hubert_out = hubert(input_values, attention_mask=attention_mask).last_hidden_state
+                pooled = masked_mean(hubert_out, attention_mask)   # uses your masked_mean helper
+            else:
+                hubert_out = hubert(input_values).last_hidden_state
+                pooled = F.adaptive_avg_pool1d(hubert_out.transpose(1, 2), 1).squeeze(-1)
+
+            logits = head(pooled)
+            preds = (torch.sigmoid(logits) > 0.5).long()
+            correct += (preds == labels.long()).sum().item()
+            total += labels.size(0)
+
+    acc = correct / max(total, 1)
+    persist_dict = compute_head_persistence_details(head, p=p)
+    return acc, persist_dict
+
+
 # --------------------------
 # plotting helper
 # --------------------------
-def plot_persistence_history(history, save_path=None, show=True):
+def save_persistence_accuracy_plot(metrics_path="metrics_history.json",
+                                   out_path="persistence_plots/acc_vs_persistence.png",
+                                   figsize=(7,5), dpi=150, show_plot=False):
     """
-    history: the persistence_history dict used above.
-    Produces two plots:
-      - overall normalized persistence vs snapshot (initial + per-epoch)
-      - per-layer normalized persistence vs snapshot lines
+    Load metrics_history.json and save a plot of normalized persistence vs accuracy.
+    Does NOT call plt.show() by default. Saves to out_path (PNG).
+    
+    Args:
+        metrics_path (str): path to JSON file with keys "epochs", "accuracy", "persistence_norm".
+        out_path (str): path where PNG will be written.
+        figsize (tuple): figure size (width, height).
+        dpi (int): output DPI for saved image.
+        show_plot (bool): if True, call plt.show() (default False).
     """
-    epochs = history["epochs"]
-    # overall
-    fig1, ax1 = plt.subplots()
-    ax1.plot(epochs, history["overall_norm"], marker="o")
-    ax1.set_xlabel("snapshot (0=initial, 1..N=after epoch)")
-    ax1.set_ylabel("overall normalized persistence (sum over layers)")
-    ax1.set_title("Overall normalized persistence vs epoch")
-    ax1.grid(True)
+    # load file
+    with open(metrics_path, "r") as f:
+        metrics = json.load(f)
 
-    # per-layer normalized
-    fig2, ax2 = plt.subplots()
-    for layer_name, vals in history["per_layer"].items():
-        # vals is list of (total, norm)
-        norms = [v[1] for v in vals]
-        # If some layers don't have every snapshot, pad with NaN for plotting clarity
-        if len(norms) < len(epochs):
-            # simple padding at end (shouldn't usually happen)
-            norms = norms + [float("nan")] * (len(epochs) - len(norms))
-        ax2.plot(epochs, norms, marker="o", label=layer_name)
-    ax2.set_xlabel("snapshot (0=initial, 1..N=after epoch)")
-    ax2.set_ylabel("layer normalized persistence")
-    ax2.set_title("Per-layer normalized persistence vs epoch")
-    ax2.legend(loc="best", fontsize="small")
-    ax2.grid(True)
+    epochs = metrics.get("epochs", [])
+    persistence = metrics.get("persistence_norm", metrics.get("overall_norm", []))
+    accuracy = metrics.get("accuracy", None)
 
-    if save_path:
-        # save both plots in one figure folder
-        os.makedirs(save_path, exist_ok=True)
-        fig1.savefig(os.path.join(save_path, "overall_normalized_persistence.png"), bbox_inches="tight")
-        fig2.savefig(os.path.join(save_path, "per_layer_normalized_persistence.png"), bbox_inches="tight")
-    if show:
+    # Basic validation / alignment: trim/pad to same snapshot length
+    n = len(epochs)
+    if n == 0:
+        raise ValueError(f"No epochs found in {metrics_path} (epochs list is empty).")
+
+    # ensure persistence list length matches
+    if len(persistence) < n:
+        # pad with NaN to align
+        persistence = list(persistence) + [math.nan] * (n - len(persistence))
+    elif len(persistence) > n:
+        persistence = persistence[:n]
+
+    if accuracy is None:
+        acc_vals = [math.nan] * n
+    else:
+        if len(accuracy) < n:
+            acc_vals = list(accuracy) + [math.nan] * (n - len(accuracy))
+        elif len(accuracy) > n:
+            acc_vals = accuracy[:n]
+        else:
+            acc_vals = accuracy
+
+    # create output folder
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # build plot
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(epochs, persistence, marker="o", linestyle="-", label="Normalized Persistence")
+    ax.plot(epochs, acc_vals, marker="s", linestyle="-", label="Accuracy")
+
+    ax.set_xlabel("Epoch (0 = before training)")
+    ax.set_ylabel("Score (0 – 1)")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xticks(epochs)
+    ax.set_title("Normalized Persistence vs Accuracy")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.legend(loc="best", fontsize="small")
+    fig.tight_layout()
+
+    # save and close
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
+    if show_plot:
         plt.show()
-    plt.close(fig1)
-    plt.close(fig2)
+    plt.close(fig)
+    return out_path
 
 
 if __name__ == "__main__":
@@ -135,29 +217,16 @@ if __name__ == "__main__":
     for p in hubert.parameters():
         p.requires_grad = False
     hubert.to(DEVICE)
-    head = PoolHeadNoPoolingInside(hidden_dim=H, dropout=DROPOUT).to(DEVICE)
+    head = PoolHeadNoPoolingInside(hidden_dim=768, dropout=DROPOUT).to(DEVICE)
     optimizer = torch.optim.Adam(head.parameters(), lr=LR)
     criterion = nn.BCEWithLogitsLoss()
     # --------------------------
     # in your main training code: create a history container BEFORE training
     # --------------------------
-    persistence_history = {
-        "p": p,
-        "epochs": [],          # list of epoch indices (0 for before training)
-        "overall_total": [],   # overall_total at each snapshot
-        "overall_norm": [],    # overall_normalized at each snapshot
-        "per_layer": {}        # layer_name -> list of (total, normalized) per snapshot
-    }
+    init_acc, init_persist = evaluate_and_snapshot(hubert, head, dev_loader, DEVICE, p=p)
+    metrics_history = {"epochs": [0], "accuracy": [init_acc], "persistence_norm": [init_persist["overall_normalized"]]}
+    print(f"[Init] acc={init_acc:.4f}, norm_persist={init_persist['overall_normalized']:.4f}")
 
-    # compute persistence BEFORE training (snapshot 0)
-    init_p = get_head_persistence(head, p=p)
-    persistence_history["epochs"].append(0)
-    persistence_history["overall_total"].append(init_p["overall_total"])
-    persistence_history["overall_norm"].append(init_p["overall_normalized"])
-    for lname, (t, tn) in init_p["per_layer"].items():
-        persistence_history["per_layer"].setdefault(lname, []).append((t, tn))
-
-    print("Initial head persistence:", init_p)
 
     # --------------------------
     # inside your epoch loop (after validation), append a snapshot
@@ -196,30 +265,24 @@ if __name__ == "__main__":
             pbar.set_postfix(train_loss=f"{running_loss/ (pbar.n+1):.4f}")
             # after training epoch (and after evaluation if you like), snapshot persistence:
 
-        head.eval()
-        # (run eval here as in your code) ...
-        # then snapshot:
-        epoch_idx = epoch + 1   # choose 1..NUM_EPOCHS for readability
-        curr_p = get_head_persistence(head, p=p)
-        persistence_history["epochs"].append(epoch_idx)
-        persistence_history["overall_total"].append(curr_p["overall_total"])
-        persistence_history["overall_norm"].append(curr_p["overall_normalized"])
-        for lname, (t, tn) in curr_p["per_layer"].items():
-            persistence_history["per_layer"].setdefault(lname, []).append((t, tn))
+        epoch_idx = epoch + 1
+        curr_acc, curr_persist = evaluate_and_snapshot(hubert, head, dev_loader, DEVICE, p=p)
 
-        # optionally save history to disk each epoch
-        with open("persistence_history.json", "w") as f:
-            # convert tuples to lists for JSON
-            serial = {
-                "p": persistence_history["p"],
-                "epochs": persistence_history["epochs"],
-                "overall_total": persistence_history["overall_total"],
-                "overall_norm": persistence_history["overall_norm"],
-                "per_layer": {k: [list(x) for x in v] for k, v in persistence_history["per_layer"].items()}
-            }
-            json.dump(serial, f, indent=2)
+        metrics_history["epochs"].append(epoch_idx)
+        metrics_history["accuracy"].append(curr_acc)
+        metrics_history["persistence_norm"].append(curr_persist["overall_normalized"])
 
-        print(f"Epoch {epoch_idx} persistence overall_norm={curr_p['overall_normalized']:.6f}, overall_total={curr_p['overall_total']:.6f}")
+        print(f"Epoch {epoch_idx}: acc={curr_acc:.4f}, norm_persist={curr_persist['overall_normalized']:.4f}")
 
+        # optional: save intermediate
+        with open("metrics_history.json", "w") as f:
+            json.dump(metrics_history, f, indent=2)
     # Example: after training finishes
-    plot_persistence_history(persistence_history, save_path="persistence_plots", show=True)
+    saved = save_persistence_accuracy_plot(
+        metrics_path="metrics_history.json",
+        out_path="persistence_plots/acc_vs_persistence.png",
+        figsize=(8,5),
+        dpi=200,
+        show_plot=False
+    )
+    print("Saved plot to:", saved)
