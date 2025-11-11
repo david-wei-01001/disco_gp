@@ -26,10 +26,10 @@ LR = 1e-4
 LABEL_MAP = {"bonafide": 0, "spoof": 1}
 SAVE_HEAD_PATH = "pool_head.pth"
 DROPOUT = 0.1
-p = 2.0
+p_num = 2.0
 # ------------------------------------------
 
-def compute_head_persistence_details(head_module, p=2.0):
+def compute_head_persistence_details(head_module, p_num=2.0):
     """
     Returns dict:
       {
@@ -38,7 +38,7 @@ def compute_head_persistence_details(head_module, p=2.0):
         "overall_normalized": float
       }
     """
-    raw = neural_persistence_of_module_linears(head_module, p=p)
+    raw = neural_persistence_of_module_linears(head_module, p_num=p_num)
     per_layer = {}
     overall_total = 0.0
     overall_norm = 0.0
@@ -84,7 +84,7 @@ def summarize_persistence_dict(pdict):
         overall_norm += tn
     return per_layer, overall_total, overall_norm
 
-def get_head_persistence(head_module, p=2.0):
+def get_head_persistence(head_module, p_num=2.0):
     """
     Compute persistence for all Linear modules in head_module.
     Returns a dict:
@@ -94,11 +94,11 @@ def get_head_persistence(head_module, p=2.0):
         "overall_normalized": float
       }
     """
-    raw = neural_persistence_of_module_linears(head_module, p=p)
+    raw = neural_persistence_of_module_linears(head_module, p_num=p_num)
     per_layer, overall_total, overall_norm = summarize_persistence_dict(raw)
     return {"per_layer": per_layer, "overall_total": overall_total, "overall_normalized": overall_norm}
 
-def evaluate_and_snapshot(hubert, head, dataloader, device, p=2.0):
+def evaluate_and_snapshot(hubert, head, dataloader, device, p_num=2.0):
     """
     Runs one eval pass on `dataloader` to compute accuracy, then computes persistence
     from the current head weights. Returns (accuracy, persistence_dict).
@@ -127,7 +127,7 @@ def evaluate_and_snapshot(hubert, head, dataloader, device, p=2.0):
             total += labels.size(0)
 
     acc = correct / max(total, 1)
-    persist_dict = compute_head_persistence_details(head, p=p)
+    persist_dict = compute_head_persistence_details(head, p_num=p_num)
     return acc, persist_dict
 
 
@@ -189,7 +189,7 @@ def save_persistence_accuracy_plot(metrics_path="metrics_history.json",
     ax.plot(epochs, acc_vals, marker="s", linestyle="-", label="Accuracy")
 
     ax.set_xlabel("Epoch (0 = before training)")
-    ax.set_ylabel("Score (0 – 1)")
+    ax.set_ylabel("Score (0 - 1)")
     ax.set_ylim(0.0, 1.0)
     ax.set_xticks(epochs)
     ax.set_title("Normalized Persistence vs Accuracy")
@@ -223,7 +223,7 @@ if __name__ == "__main__":
     # --------------------------
     # in your main training code: create a history container BEFORE training
     # --------------------------
-    init_acc, init_persist = evaluate_and_snapshot(hubert, head, dev_loader, DEVICE, p=p)
+    init_acc, init_persist = evaluate_and_snapshot(hubert, head, dev_loader, DEVICE, p_num=p_num)
     metrics_history = {"epochs": [0], "accuracy": [init_acc], "persistence_norm": [init_persist["overall_normalized"]]}
     print(f"[Init] acc={init_acc:.4f}, norm_persist={init_persist['overall_normalized']:.4f}")
 
@@ -266,7 +266,7 @@ if __name__ == "__main__":
             # after training epoch (and after evaluation if you like), snapshot persistence:
 
         epoch_idx = epoch + 1
-        curr_acc, curr_persist = evaluate_and_snapshot(hubert, head, dev_loader, DEVICE, p=p)
+        curr_acc, curr_persist = evaluate_and_snapshot(hubert, head, dev_loader, DEVICE, p_num=p_num)
 
         metrics_history["epochs"].append(epoch_idx)
         metrics_history["accuracy"].append(curr_acc)

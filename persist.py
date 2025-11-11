@@ -131,7 +131,7 @@ def zero_dim_persistences_from_matrix(M_norm: np.ndarray):
 # -----------------------
 # p-norm of persistence diagram (default p=2)
 # -----------------------
-def p_norm_of_persistences(persistences, p=2.0):
+def p_norm_of_persistences(persistences, p_num=2.0):
     if len(persistences) == 0:
         return 0.0
 
@@ -143,13 +143,13 @@ def p_norm_of_persistences(persistences, p=2.0):
         arr.append(v)
     arr = np.asarray(arr, dtype=float)
 
-    return float((np.sum(np.abs(arr) ** p)) ** (1.0 / p))
+    return float((np.sum(np.abs(arr) ** p_num)) ** (1.0 / p_num))
 
 # -----------------------
 # top-level: compute neural persistence from adjacency matrix (M)
 # mirrors earlier code: normalize by global max weight W then use Aleph replacement
 # -----------------------
-def compute_neural_persistence_from_adjacency(M: np.ndarray, p=2.0):
+def compute_neural_persistence_from_adjacency(M: np.ndarray, p_num=2.0):
     """
     M: square adjacency matrix (nonnegative); if not normalized, we'll normalize by its max value.
     Returns dict with total_persistence (p-norm) and normalized version tp / sqrt(n-1)
@@ -163,7 +163,7 @@ def compute_neural_persistence_from_adjacency(M: np.ndarray, p=2.0):
         M_norm = M / float(W)
 
     persistences = zero_dim_persistences_from_matrix(M_norm)
-    tp = p_norm_of_persistences(persistences, p=p)
+    tp = p_norm_of_persistences(persistences, p_num=p_num)
     n_vertices = M.shape[0]
     tp_norm = tp / math.sqrt(max(1, n_vertices - 1))
     return {"total_persistence": float(tp), "total_persistence_normalized": float(tp_norm)}
@@ -171,14 +171,14 @@ def compute_neural_persistence_from_adjacency(M: np.ndarray, p=2.0):
 # -----------------------
 # convenience wrappers for torch.nn.Linear
 # -----------------------
-def neural_persistence_of_linear_layer(linear: nn.Linear, p=2.0):
+def neural_persistence_of_linear_layer(linear: nn.Linear, p_num=2.0):
     W = linear.weight.detach().cpu().numpy()  # (out, in)
     M = linear_to_bipartite_adjacency(W)
-    return compute_neural_persistence_from_adjacency(M, p=p)
+    return compute_neural_persistence_from_adjacency(M, p_num=p_num)
 
-def neural_persistence_of_module_linears(module: nn.Module, p=2.0):
+def neural_persistence_of_module_linears(module: nn.Module, p_num=2.0):
     results = {}
     for name, mod in module.named_modules():
         if isinstance(mod, nn.Linear):
-            results[name or "<linear>"] = neural_persistence_of_linear_layer(mod, p=p)
+            results[name or "<linear>"] = neural_persistence_of_linear_layer(mod, p_num=p_num)
     return results
