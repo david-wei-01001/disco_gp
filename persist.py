@@ -134,7 +134,15 @@ def zero_dim_persistences_from_matrix(M_norm: np.ndarray):
 def p_norm_of_persistences(persistences, p=2.0):
     if len(persistences) == 0:
         return 0.0
-    arr = np.asarray(persistences, dtype=float)
+
+    # Convert all values to floats (handles torch tensors or Parameters)
+    arr = []
+    for v in persistences:
+        if isinstance(v, torch.Tensor):
+            v = v.detach().cpu().numpy().astype(float)
+        arr.append(v)
+    arr = np.asarray(arr, dtype=float)
+
     return float((np.sum(np.abs(arr) ** p)) ** (1.0 / p))
 
 # -----------------------
